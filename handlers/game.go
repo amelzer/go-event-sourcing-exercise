@@ -39,6 +39,26 @@ type EventPersister interface {
 // and persist a new EventMoveSuccess if success
 // otherwise it will persist EventMoveFail
 func MoveHandler(game Game, event store.Event, eventStore EventPersister) {
+	if event.EventType != EventMoveRequest {
+		return
+	}
+
+	er := game.Move(event.EventData)
+
+	ev := store.Event{
+		AggregateID: event.AggregateID,
+	}
+
+	if er != nil {
+		ev.EventType = EventMoveFail
+		ev.EventData = er.Error()
+	} else {
+		ev.EventType = EventMoveSuccess
+		ev.EventData = event.EventData
+	}
+
+	eventStore.Persist(ev)
+
 }
 
 // PromotionHandler should listen on events of type EventPromotionRequest
@@ -46,11 +66,39 @@ func MoveHandler(game Game, event store.Event, eventStore EventPersister) {
 // and persist a new EventPromotionSuccess if success,
 // otherwise it will persist EventPromotionFail
 func PromotionHandler(game Game, event store.Event, eventStore EventPersister) {
+		if event.EventType != EventPromotionRequest {
+			return
+		}
+		err := game.Promote(event.EventData)
+
+		ev := store.Event{
+			AggregateID: event.AggregateID,
+		}
+
+		if err != nil {
+			ev.EventType = EventPromotionFail
+			ev.EventData = err.Error()
+		} else {
+			ev.EventType = EventPromotionSuccess
+			ev.EventData = event.EventData
+		}
+
+		eventStore.Persist(ev)
+
 }
 
 // Rollback handler should listen on events of type EventRollbackRequest
 // and persist a new EventRollbackSuccess to the store (rollback cannot fail)
 func RollbackHandler(_ Game, event store.Event, eventStore EventPersister) {
+		if event.EventType != EventRollbackRequest {
+			return
+		}
+
+		eventStore.Persist(store.Event{
+			AggregateID: event.AggregateID,
+			EventType: EventRollbackSuccess,
+			EventData: event.EventData,
+		})
 }
 
 // FilterGameMoveEvents is a function that receives an events slice and returns a new
@@ -59,7 +107,23 @@ func RollbackHandler(_ Game, event store.Event, eventStore EventPersister) {
 // 2. events that are not of action types (move, promotion)
 // 3. events that have been rolled back
 func FilterGameMoveEvents(events []store.Event, gameID string) []store.Event {
-	return events
+
+		var ret []store.Event
+
+		for _, event := range events {
+			if event.AggregateID != gameID {
+				continue
+			}
+			switch event.EventType {
+				case EventPromotionSuccess, EventMoveSuccess:
+					ret = append(ret, event)
+				case EventRollbackSuccess:
+					if len(ret) > 0 {
+						ret = ret[:len(ret) - 1]
+					}
+			}
+		}
+	return ret
 }
 
 // MustRebuildGame should receive a game, an events slice, gameID and movesCount
@@ -68,5 +132,19 @@ func FilterGameMoveEvents(events []store.Event, gameID string) []store.Event {
 // stop when you have reached the moves count
 // You can assume moveCount will be -1 to perform all actions
 func MustRebuildGame(game Game, events []store.Event, gameID string, movesCount int) Game {
+	// apply move success
+
+	for i, event := range FilterGameMoveEvents(events , gameID){
+			if i < movesCount || movesCount < 0 {
+				switch event.EventType {
+					case EventPromotionSuccess:
+						game.Promote(event.EventData)
+					case EventMoveSuccess:
+						game.Move(event.EventData)
+				}
+			}
+
+	}
+
 	return game
 }
